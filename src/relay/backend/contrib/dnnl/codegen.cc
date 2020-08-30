@@ -449,6 +449,8 @@ class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
       } else if (name == "dnnl.conv2d_relu") {
         call = GetRootCall(fn->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
         CHECK(call->op.as<OpNode>()) << "Not op node";
+      } else if (name == "dnnl.conv1d_bias_relu") {
+        call = GetRootCall(fn->body.as<CallNode>(), 2, {"nn.conv1d", "nn.bias_add", "nn.relu"});
       } else {
         LOG(FATAL) << "Unrecognized DNNL pattern: " << name;
       }

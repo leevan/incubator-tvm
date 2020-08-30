@@ -32,6 +32,7 @@
 #include "../json/json_node.h"
 #include "../json/json_runtime.h"
 #include "dnnl.hpp"
+#include <iostream>
 
 namespace tvm {
 namespace runtime {
@@ -106,6 +107,8 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
           Conv2d(nid, true, false);
         } else if ("dnnl.conv2d_bias_relu" == op_name) {
           Conv2d(nid, true, true);
+        } else if ("dnnl.conv1d_bias_relu" == op_name) {
+          Conv1d(nid, true, true);
         } else if ("nn.dense" == op_name) {
           Dense(nid);
         } else if ("nn.batch_norm" == op_name) {
@@ -241,6 +244,97 @@ class DNNLJSONRuntime : public JSONRuntimeBase {
                          {DNNL_ARG_WEIGHTS, conv2d_weights_memory},
                          {DNNL_ARG_BIAS, conv2d_bias_memory},
                          {DNNL_ARG_DST, conv2d_dst_memory}});
+  }
+
+  void Conv1d(const size_t& nid, const bool has_relu = false, const bool has_bias = false) {
+    auto node = nodes_[nid];
+
+    // Setup attributes.
+    auto data_entry = node.GetInputs()[0];
+    auto weight_entry = node.GetInputs()[1];
+    dnnl::memory::dims input_shape = nodes_[data_entry.id_].GetOpShape()[data_entry.index_];
+    dnnl::memory::dims weight_shape = nodes_[weight_entry.id_].GetOpShape()[weight_entry.index_];
+    std::vector<std::string> str_strides = node.GetAttr<std::vector<std::string>>("strides");
+    std::vector<std::string> str_padding = node.GetAttr<std::vector<std::string>>("padding");
+    dnnl::memory::dim groups = std::stoi(node.GetAttr<std::vector<std::string>>("groups")[0]);
+
+    dnnl::memory::dim N = input_shape[0],       // batch size
+        IC = input_shape[1],                    // input channels
+        IW = input_shape[2],                    // input width
+        OC = weight_shape[0],                   // output channels
+        KW = weight_shape[2],                   // weight width
+        PW_L = std::stoi(str_padding[0]),       // width padding: left
+        PW_R = std::stoi(str_padding[0]),       // width padding: right
+        SW = std::stoi(str_strides[0]),         // weight-wise stride
+        OW = (IW - KW + PW_L + PW_R) / SW + 1;  // output width
+
+    // Memory shapes.
+    dnnl::memory::dims src_dims = {N, IC, IW};
+    dnnl::memory::dims weights_dims = {OC, IC, KW};
+    if (groups > 1) {
+      weights_dims = {groups, 1, IC / groups, KW};
+    }
+    dnnl::memory::dims bias_dims = {OC};
+    dnnl::memory::dims dst_dims = {N, OC, OW};
+    dnnl::memory::dims strides_dims = {SW};
+    dnnl::memory::dims padding_dims_l = {PW_L};
+    dnnl::memory::dims padding_dims_r = {PW_R};
+
+    // Memory descriptions.
+    auto conv_src_md = dnnl::memory::desc(src_dims, dt::f32, tag::any);
+    auto conv_weights_md = dnnl::memory::desc(weights_dims, dt::f32, tag::any);
+    auto conv_bias_md = dnnl::memory::desc(bias_dims, dt::f32, tag::any);
+    auto conv_dst_md = dnnl::memory::desc(dst_dims, dt::f32, tag::ncw);
+
+    // Covn1d description.
+    auto conv_desc = dnnl::convolution_forward::desc(
+        dnnl::prop_kind::forward_inference, dnnl::algorithm::convolution_direct, conv_src_md,
+        conv_weights_md, conv_bias_md, conv_dst_md, strides_dims, padding_dims_l, padding_dims_r);
+
+
+    // Enable ReLU
+    dnnl::primitive_attr attr;
+    if (has_relu) {
+      dnnl::post_ops ops;
+      ops.append_eltwise(1.f, dnnl::algorithm::eltwise_relu, 0.f, 0.f);
+      attr.set_post_ops(ops);
+    }
+
+    auto conv1d_prim_desc = dnnl::convolution_forward::primitive_desc(conv_desc, attr, engine_);
+    // Push to the network.
+    auto conv = dnnl::convolution_forward(conv1d_prim_desc);
+    net_.push_back(conv);
+
+
+    // Data memory.
+    CHECK_EQ(node.GetAttr<std::vector<std::string>>("data_layout")[0], "NCW");
+    auto conv1d_src_memory = BindDNNLMemory(data_entry, {src_dims, dt::f32, tag::ncw});
+
+    // Weight memory.
+    CHECK_EQ(node.GetAttr<std::vector<std::string>>("kernel_layout")[0], "OIW");
+    auto conv1d_weights_memory = BindDNNLMemory(
+        weight_entry, {weights_dims, dt::f32, (groups > 1) ? tag::goiw : tag::oiw});
+
+    // Bias memory.
+    auto conv1d_bias_memory = dnnl::memory({bias_dims, dt::f32, tag::x}, engine_);
+    if (has_bias) {
+      auto bias_entry = node.GetInputs()[2];
+      BindDNNLMemory(bias_entry, conv1d_bias_memory);
+    } else {
+      float bias[OC] = {0};
+      write_to_dnnl_memory(bias, conv1d_bias_memory, OC * sizeof(float));
+    }
+
+    // Output memory.
+    JSONGraphNodeEntry out_entry(nid, 0);
+    auto conv1d_dst_memory = BindDNNLMemory(out_entry, conv1d_prim_desc.dst_desc());
+
+    // Bind memory buffers.
+    net_args_.push_back({{DNNL_ARG_SRC, conv1d_src_memory},
+                         {DNNL_ARG_WEIGHTS, conv1d_weights_memory},
+                         {DNNL_ARG_BIAS, conv1d_bias_memory},
+                         {DNNL_ARG_DST, conv1d_dst_memory}});
+    
   }
 
   void Dense(const size_t& nid) {

@@ -732,6 +732,9 @@ def _convolution():
         padding = inputs[4]
         dilation = inputs[5]
 
+        print("data shape", _infer_shape(data))
+        print("weight shape", _infer_shape(weight))
+
         if isinstance(weight, _expr.Expr):
             inferred_shape = _infer_shape(weight)
             weight_shape = []
@@ -763,40 +766,47 @@ def _convolution():
 
         if isinstance(strides, _expr.Expr):
             strides = _infer_shape(strides)
-            if len(kernel_size) == 1:
-                strides = (1, ) + strides
+            #if len(kernel_size) == 1:
+            #    strides = (1, ) + strides
 
         if isinstance(padding, _expr.Expr):
             padding = _infer_shape(padding)
-            if len(kernel_size) == 1:
-                padding = (0, ) + padding
+            #if len(kernel_size) == 1:
+            #    padding = (0, ) + padding
 
         if isinstance(dilation, _expr.Expr):
             dilation = _infer_shape(dilation)
-            if len(kernel_size) == 1:
-                dilation = (1, ) + dilation
+            #if len(kernel_size) == 1:
+            #    dilation = (1, ) + dilation
 
         if use_transpose:
             if len(kernel_size) == 3:
                 conv_op = _op.nn.conv3d_transpose
-            else:
+            elif len(kernel_size) == 2:
                 conv_op = _op.nn.conv2d_transpose
+            else:
+                conv_op = _op.nn.conv1d_transpose
         else:
             if len(kernel_size) == 3:
                 conv_op = _op.nn.conv3d
-            else:
+            elif len(kernel_size) == 2:
                 conv_op = _op.nn.conv2d
+            else:
+                conv_op = _op.nn.conv1d
 
         if len(kernel_size) == 3:
             data_layout = "NCDHW"
             kernel_layout = "OIDHW"
-        else:
+        elif len(kernel_size) == 2:
             data_layout = "NCHW"
             kernel_layout = "OIHW"
+        else:
+            data_layout = "NCW"
+            kernel_layout = "OIW"
 
-        if len(kernel_size) == 1:
-            data = _op.expand_dims(data, axis=2)
-            weight = _op.expand_dims(weight, axis=2)
+        #if len(kernel_size) == 1:
+        #    data = _op.expand_dims(data, axis=2)
+        #    weight = _op.expand_dims(weight, axis=2)
 
         conv_out = conv_op(data,
                            weight,
@@ -805,9 +815,10 @@ def _convolution():
                            dilation=dilation,
                            groups=groups,
                            channels=channels,
-                           kernel_size=[1] + kernel_size \
-                                        if len(kernel_size) == 1 \
-                                        else kernel_size,
+                           #kernel_size=[1] + kernel_size \
+                           #             if len(kernel_size) == 1 \
+                           #             else kernel_size,
+                           kernel_size=kernel_size,
                            data_layout=data_layout,
                            kernel_layout=kernel_layout,
                            out_layout="",
@@ -816,8 +827,8 @@ def _convolution():
             res = _op.nn.bias_add(conv_out, bias)
         else:
             res = conv_out
-        if len(kernel_size) == 1:
-            res = _op.squeeze(res, axis=[2])
+        #if len(kernel_size) == 1:
+        #    res = _op.squeeze(res, axis=[2])
         return res
 
     return _impl
@@ -1994,7 +2005,8 @@ def _get_convert_map(prelude):
         "prim::device"                          : _none(),
         "aten::sub"                             : _elemwise("subtract"),
         "aten::sub_"                            : _elemwise("subtract"),
-        "aten::max"                             : _elemwise("maximum"),
+        # "aten::max"                             : _elemwise("maximum"),
+        "aten::max"                             : _reduce("max"),
         "aten::min"                             : _elemwise("minimum"),
         "aten::mul"                             : _elemwise("multiply"),
         "aten::mul_"                            : _elemwise("multiply"),
@@ -2693,6 +2705,9 @@ def convert_operators(operators, outputs, ret_names, convert_map, prelude, defau
                 # See _adaptive_max_2d above for example
                 out_names = _get_output_names(op_node)
                 outputs.update(zip(out_names, relay_out))
+            elif op_node.outputsSize() > 1:
+                out_names = _get_output_names(op_node)
+                outputs[out_names[0]] = relay_out
             else:
                 assert op_node.outputsSize() == 1
                 outputs[node_name] = relay_out

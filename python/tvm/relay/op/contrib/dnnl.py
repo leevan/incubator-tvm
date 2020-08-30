@@ -64,7 +64,7 @@ _register_external_op_helper("nn.dense")
 _register_external_op_helper("nn.relu")
 _register_external_op_helper("add")
 _register_external_op_helper("subtract")
-_register_external_op_helper("multiply")
+#_register_external_op_helper("multiply")
 
 
 def make_pattern(with_bias=True):
